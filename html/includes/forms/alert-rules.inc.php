@@ -2,7 +2,7 @@
 /**
  * alert-rules.inc.php
  *
- * LibreNMS alert-rules.inc.php for processor
+ * LibreNMS alert-rules.inc.php
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -24,10 +24,11 @@
  */
 
 use LibreNMS\Alerting\QueryBuilderParser;
+use LibreNMS\Authentication\Auth;
 
 header('Content-type: application/json');
 
-if (is_admin() === false) {
+if (!Auth::user()->hasGlobalAdmin()) {
     die(json_encode([
         'status' => 'error',
         'message' => 'ERROR: You need to be admin',
@@ -37,17 +38,18 @@ if (is_admin() === false) {
 $status = 'ok';
 $message = '';
 
-$builder_json  = $_POST['builder_json'];
-$query    = QueryBuilderParser::fromJson($builder_json)->toSql();
-$rule_id  = $_POST['rule_id'];
-$count    = mres($_POST['count']);
-$delay    = mres($_POST['delay']);
-$interval = mres($_POST['interval']);
-$mute     = mres($_POST['mute']);
-$invert   = mres($_POST['invert']);
-$name     = mres($_POST['name']);
-$proc     = mres($_POST['proc']);
-$severity = mres($_POST['severity']);
+$builder_json = $_POST['builder_json'];
+$query        = QueryBuilderParser::fromJson($builder_json)->toSql();
+$rule_id      = $_POST['rule_id'];
+$count        = mres($_POST['count']);
+$delay        = mres($_POST['delay']);
+$interval     = mres($_POST['interval']);
+$mute         = mres($_POST['mute']);
+$invert       = mres($_POST['invert']);
+$name         = mres($_POST['name']);
+$proc         = mres($_POST['proc']);
+$recovery     = ($vars['recovery']);
+$severity     = mres($_POST['severity']);
 
 if (!is_numeric($count)) {
     $count = '-1';
@@ -68,12 +70,15 @@ if ($invert == 'on') {
     $invert = false;
 }
 
+$recovery = empty($recovery) ? $recovery = false : true;
+
 $extra = array(
     'mute'     => $mute,
     'count'    => $count,
     'delay'    => $delay_sec,
     'invert'   => $invert,
     'interval' => $interval_sec,
+    'recovery' => $recovery,
 );
 
 $extra_json = json_encode($extra);
@@ -119,7 +124,11 @@ if (is_numeric($rule_id) && $rule_id > 0) {
         if ($rule_id) {
             $message = "Added Rule: <i>$name</i>";
         } else {
-            $message = 'Failed to add Rule: <i>' . $name . '</i>';
+            if (dbFetchCell('SELECT 1 FROM alert_rules WHERE name=?', [$name])) {
+                $message = "Rule named <i>$name</i> already exists";
+            } else {
+                $message = "Failed to add Rule: <i>$name</i>";
+            }
             $status = 'error';
         }
     }
@@ -140,7 +149,6 @@ if (is_numeric($rule_id) && $rule_id > 0) {
     dbSyncRelationship('alert_device_map', 'rule_id', $rule_id, 'device_id', $devices);
     dbSyncRelationship('alert_group_map', 'rule_id', $rule_id, 'group_id', $groups);
 }
-
 
 die(json_encode([
     'status'       => $status,

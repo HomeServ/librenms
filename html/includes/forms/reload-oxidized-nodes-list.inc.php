@@ -9,14 +9,16 @@
  * option) any later version.  Please see LICENSE.txt at the top level of
  * the source code distribution for details.
  */
- 
-if (is_admin() === false) {
+
+use LibreNMS\Authentication\Auth;
+
+if (!Auth::user()->hasGlobalAdmin()) {
     $status = 'error';
     $message = 'ERROR: You need to be admin to reload Oxidized node list';
 } else {
     oxidized_reload_nodes();
     $status = 'ok';
-    $message = 'Oxdized node list was reloaded';
+    $message = 'Oxidized node list was reloaded';
 }
 $output = array(
     'status'  => $status,

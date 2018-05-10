@@ -33,7 +33,7 @@ use LibreNMS\Authentication\Auth;
 function GenSQL($rule, $query_builder = false)
 {
     if ($query_builder) {
-        return QueryBuilderParser::fromJson($query_builder);
+        return QueryBuilderParser::fromJson($query_builder)->toSql();
     } else {
         return GenSQLOld($rule);
     }
@@ -114,11 +114,10 @@ function RunMacros($rule, $x = 1)
     krsort($config['alert']['macros']['rule']);
     foreach ($config['alert']['macros']['rule'] as $macro => $value) {
         if (!strstr($macro, " ")) {
-            $value = str_replace('%', '', $value);
-            $rule = str_replace('macros.'.$macro, '('.$value.')', $rule);
+            $rule = str_replace('%macros.'.$macro, '('.$value.')', $rule);
         }
     }
-    if (strstr($rule, "macros.")) {
+    if (strstr($rule, "%macros.")) {
         if (++$x < 30) {
             $rule = RunMacros($rule, $x);
         } else {
@@ -230,7 +229,7 @@ function RunRules($device_id)
                 c_echo('Status: %bNOCHG');
             } else {
                 if (dbInsert(array('state' => 0, 'device_id' => $device_id, 'rule_id' => $rule['id']), 'alert_log')) {
-                    if (!dbUpdate(array('state' => 0, 'open' => 1), 'alerts', 'device_id = ? && rule_id = ?', array($device_id,$rule['id']))) {
+                    if (!dbUpdate(array('state' => 0, 'open' => 1, 'note' => ''), 'alerts', 'device_id = ? && rule_id = ?', array($device_id,$rule['id']))) {
                         dbInsert(array('state' => 0, 'device_id' => $device_id, 'rule_id' => $rule['id'], 'open' => 1, 'alerted' => 0), 'alerts');
                     }
                     c_echo(PHP_EOL . 'Status: %gOK');
@@ -529,12 +528,18 @@ function DescribeAlert($alert)
             $obj['diff'] = $extra['diff'];
         }
     } elseif ($alert['state'] == 0) {
+        // Alert is now cleared
         $id = dbFetchRow('SELECT alert_log.id,alert_log.time_logged,alert_log.details FROM alert_log WHERE alert_log.state != 2 && alert_log.state != 0 && alert_log.rule_id = ? && alert_log.device_id = ? && alert_log.id < ? ORDER BY id DESC LIMIT 1', array($alert['rule_id'], $alert['device_id'], $alert['id']));
         if (empty($id['id'])) {
             return false;
         }
 
-        $extra          = json_decode(gzuncompress($id['details']), true);
+        $extra = json_decode(gzuncompress($id['details']), true);
+
+        // Reset count to 0 so alerts will continue
+        $extra['count'] = 0;
+        dbUpdate(array('details' => gzcompress(json_encode($id['details']), 9)), 'alert_log', 'id = ?', array($alert['id']));
+
         if (!empty($tpl['title_rec'])) {
             $obj['title'] = $tpl['title_rec'];
         } else {
@@ -733,7 +738,7 @@ function loadAlerts($where)
     $alerts = [];
     foreach (dbFetchRows("SELECT alerts.id, alerts.device_id, alerts.rule_id, alerts.state FROM alerts WHERE $where") as $alert_status) {
         $alert = dbFetchRow(
-            'SELECT alert_log.id,alert_log.rule_id,alert_log.device_id,alert_log.state,alert_log.details,alert_log.time_logged,alert_rules.rule,alert_rules.severity,alert_rules.extra,alert_rules.name FROM alert_log,alert_rules WHERE alert_log.rule_id = alert_rules.id && alert_log.device_id = ? && alert_log.rule_id = ? && alert_rules.disabled = 0 ORDER BY alert_log.id DESC LIMIT 1',
+            'SELECT alert_log.id,alert_log.rule_id,alert_log.device_id,alert_log.state,alert_log.details,alert_log.time_logged,alert_rules.rule,alert_rules.severity,alert_rules.extra,alert_rules.name,alert_rules.builder FROM alert_log,alert_rules WHERE alert_log.rule_id = alert_rules.id && alert_log.device_id = ? && alert_log.rule_id = ? && alert_rules.disabled = 0 ORDER BY alert_log.id DESC LIMIT 1',
             array($alert_status['device_id'], $alert_status['rule_id'])
         );
 
@@ -764,6 +769,11 @@ function RunAlerts()
         $noacc            = false;
         $updet            = false;
         $rextra           = json_decode($alert['extra'], true);
+        if (!isset($rextra['recovery'])) {
+            // backwards compatibility check
+            $rextra['recovery'] = true;
+        }
+
         $chk              = dbFetchRow('SELECT alerts.alerted,devices.ignore,devices.disabled FROM alerts,devices WHERE alerts.device_id = ? && devices.device_id = alerts.device_id && alerts.rule_id = ?', array($alert['device_id'], $alert['rule_id']));
 
         if ($chk['alerted'] == $alert['state']) {
@@ -836,6 +846,11 @@ function RunAlerts()
         if (IsParentDown($alert['device_id'])) {
             $noiss = true;
             log_event('Skipped alerts because all parent devices are down', $alert['device_id'], 'alert', 1);
+        }
+
+        if ($alert['state'] == 0 && $rextra['recovery'] == false) {
+            // Rule is set to not send a recovery alert
+            $noiss = true;
         }
 
         if (!$noiss) {
